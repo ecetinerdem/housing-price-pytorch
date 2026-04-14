@@ -119,6 +119,112 @@ class HousePricePredictor(nn.Module):
         x = self.fc3(x) # Output layer so no activation
         return x
 
+def train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, target_scaler, num_epochs=1000, learning_rate=0.001, patience=50, min_delta=0.0001):
+    """
+    Trains the neural network model with early stopping based on validation loss
+    and reports evaluation metrics on the test set.
+    Args:
+        model (nn.Module): The neural network model to train.
+        X_train (torch.Tensor): Training features.
+        y_train (torch.Tensor): Training target.
+        X_val (torch.Tensor): Validation features.
+        y_val (torch.Tensor): Validation target.
+        X_test (torch.Tensor): Test features.
+        y_test (torch.Tensor): Test target.
+        target_scaler (MinMaxScaler): The scaler used for the target variable, needed for inverse transform.
+        num_epochs (int): Maximum number of training epochs.
+        learning_rate (float): Learning rate for the optimizer.
+        patience (int): Number of epochs to wait for improvement before stopping.
+        min_delta (float): Minimum change in monitored quantity to qualify as an improvement.
+    """
+    # Define a loss function and optimizer
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    best_val_loss = float('inf')
+    epochs_no_improvement = 0
+    early_stop = False
+    best_model_state = None # To store the state_dict of the best model
+    
+    
+    print(f"Starting model training for {num_epochs} epochs with early stopping (patience= {patience})...")
+
+    try:
+        with tqdm(range(num_epochs), desc="Training Progress") as pbar:
+            for epochs in pbar:
+                if early_stop:
+                    break
+                # Set model to training model
+                model.train()
+
+                # Forward pass (training)
+                outputs = model(X_train)
+                loss = criterion(outputs, y_train)
+
+                # Backwards pass and optimize
+                optimizer.zero_grad() # Clear the gradients
+                loss.backward() # Computing gradients
+                optimizer.step()
+
+                # Evaluate on validation set
+                model.eval() # Set the model to evaluation mode
+                with torch.no_grad(): # Disable gradient calculation
+                    val_outputs = model(X_val)
+                    val_loss = criterion(val_outputs, y_val)
+
+                # Early stopping logic based on validation loss
+                if val_loss.item() <best_val_loss - min_delta:
+                    best_val_loss = val_loss.item()
+                    epochs_no_improvement = 0
+                    best_model_state = model.state_dict() # Saving best model state
+                else:
+                    epochs_no_improvement += 1
+                    if epochs_no_improvement == patience:
+                        print(f"Early stopping triggered at epoch {epochs+1} (no improvement for {patience} epochs.)")
+                        early_stop = True
+                
+                # Update tqdm post-fix with current loss values
+                pbar.set_postfix_str(f"Train loss: {loss.item():.4f}, Val loss: {val_loss.item():.4f}")
+        
+        print("Training completed")
+
+        # Load the best model state if early stopping occurred and best state was saved
+        if best_model_state:
+            model.load_state_dict(best_model_state):
+            print("Loaded best model state for final evaluation and saving")
+        else:
+            # If no improvement ever found. (e.g., patience=0 or very small min_delta)
+            # the last state of the model used
+            print("No improvement found during training; using final model state for evaluation")
+
+        
+        # Final model evaluation for test set
+        print("\n--- Final Model Evaluation on Test Set ---")
+        model.eval()
+        with torch.no_grad():
+            # Get predictions on the test
+            test_predictions_scaled = model(X_test).cpu().numpy()
+            y_test_cpu = y_test.cpu().numpy()
+
+            # Inverse transform predictions and actual values to original scale for interpretable metrics
+            actual_prices = target_scaler.inverse_transform(y_test_cpu)
+            predicted_prices = target_scaler.inverse_transform(test_predictions_scaled)
+
+            # Calculate metrics
+            final_test_mse = mean_squared_error(actual_prices, predicted_prices)
+            mae = mean_absolute_error(actual_prices, predicted_prices)
+            r2 = r2_score(actual_prices, predicted_prices)
+
+            print(f"Test mse (Mean Squared Error): ${final_test_mse:.2f}(thousands squared)")
+            print(f"Mean Absolute Error(MAE): ${mae:.2f} thousands")
+            print(f"R-squared: {r2:.4f}")
+
+    except Exception as e:
+        print(f"\nAn e error occurred during training: {e}")
+        print("Training terminated prematurely")
+
+
+
 if __name__ == "__main__":
     
     # Command line flags
