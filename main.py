@@ -190,7 +190,7 @@ def train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, target_sc
 
         # Load the best model state if early stopping occurred and best state was saved
         if best_model_state:
-            model.load_state_dict(best_model_state):
+            model.load_state_dict(best_model_state)
             print("Loaded best model state for final evaluation and saving")
         else:
             # If no improvement ever found. (e.g., patience=0 or very small min_delta)
@@ -223,6 +223,43 @@ def train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, target_sc
         print(f"\nAn e error occurred during training: {e}")
         print("Training terminated prematurely")
 
+
+def save_model_as_onnx(model, onnx_path, feature_scaler, target_scaler, scaler_path):
+    # Set model to evaluation mode before export
+    model.eval()
+
+    # Create a dummy input tensor for ONNX export and move to device
+    dummy_input = torch.randn(1, 3, requires_grad=True).to(DEVICE)
+
+    try:
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            export_params=True,
+            opset_version=11,
+            do_constant_folding=True,
+            # The names to assign to the input nodes of the graph
+            input_names=['input'],
+            # The names to assign to the output nodes of the graph
+            output_names=['output'],
+            dynamic_axes={
+                'input': {0: 'batch_size'},
+                'output': {0: 'batch_size'}
+            }
+        )
+        print(f"Model successfully saved to ONNX format at: {onnx_path}")
+
+        # Save the scalers
+        with open(scaler_path, 'wb') as f:
+            pickle.dump({
+                "feature_scaler": feature_scaler,
+                "target_scaler": target_scaler
+            }, f)
+        print(f"Scalers successfully saved to: {scaler_path}")
+
+    except Exception as e:
+        print(f"Error saving model to ONNX: {e}")
 
 
 if __name__ == "__main__":
@@ -314,9 +351,15 @@ if __name__ == "__main__":
         if X_train is not None:
             # Get a model for house price prediction
             model = HousePricePredictor().to(DEVICE)
+            
             # Train the model
-
+            train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, target_scaler, args.epochs, args.lr, args.patience, args.min_delta)
+            
             # Save the model as an ONNX file
+            save_model_as_onnx(model, args.model_path, feature_scaler, target_scaler, args.scaler_path)
+
+        else:
+            print("Training aborted do to data loading issiues")
 
     elif args.predict:
          print("--- Prediction Mode ---")
