@@ -14,6 +14,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from tqdm import tqdm
+import onnxruntime as ort
 
 # --- Configuration ---
 DATA_FILE = "housing_data.csv"
@@ -262,6 +263,83 @@ def save_model_as_onnx(model, onnx_path, feature_scaler, target_scaler, scaler_p
         print(f"Error saving model to ONNX: {e}")
 
 
+def predict_with_onnx(onnx_path, scaler_path, input_features_str):
+    if not os.path.exists(onnx_path):
+        print(f"Error: ONNX model file not found at {onnx_path}")
+        return
+    if not os.path.exists(scaler_path):
+        print(f"Error: Scaler file not found at {onnx_path}")
+        return
+
+    #Load Scalers
+    try:
+        with open(scaler_path, "rb") as f:
+            scalers = pickle.load(f)
+        feature_scaler = scalers["feature_scaler"]
+        target_scaler = scalers["target_scaler"]
+
+    except Exception as e:
+        print(f"Error loading Scalers: {e}")
+        return
+
+    # Parse and Validate input features
+    try:
+        input_values = [float(x.strip()) for x in input_features_str.split(",")]
+        if len(input_values) != 3:
+            raise ValueError("Expected 3 features (square_footage, bedrooms, bathrooms)")
+        sq_footage = input_values[0]
+        bedrooms = input_values[1]
+        bathrooms = input_values[2]
+
+        # Basic validation
+        if sq_footage <= 0:
+            raise ValueError("Square footage must be a positive number")
+        if not (bedrooms > 0 and int(bedrooms) == bedrooms):
+            raise ValueError("Bedrooms must be a positive integer")
+        if not (bathrooms > 0 and int(bathrooms) == bathrooms):
+            raise ValueError("Bathrooms must be a positive integer")
+    
+        input_array = np.array(input_values).reshape(1, -1)
+    
+    except ValueError as e:
+        print(f"Error parsing or validating input features: {e}")
+        print("Please provide features as a comma-seperated list, e.g. '2500,4,2'")
+        return
+    
+    # Scale the input features using the loaded scaler
+    scaled_input = feature_scaler.transform(input_array).astype(np.float32)
+
+    # Create an ONNX runtime session
+    session = ort.InferenceSession(onnx_path)
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+
+    #Run inference
+    try:
+        ort_inputs = {input_name: scaled_input}
+        ort_outputs = session.run([output_name], ort_inputs)
+        predicted_scaled_price = ort_outputs[0]
+
+        # Inverse transform the predicted price to original scale
+        predicted_price_thousands = target_scaler.inverse_transform(predicted_scaled_price)
+
+        #Convert to actual dollar amount
+        predicted_actual_dollars = predicted_price_thousands[0][0] * 1000
+        print(
+            f"\n Input features: Square footage: {sq_footage}, Bedrooms: {int(bedrooms)}, Bathrooms: {int(bathrooms)}"
+        )
+
+        # Display as actual dollar amount
+        print(f"Predicted price ${predicted_actual_dollars:,.2f}")
+
+    except Exception as e:
+        print(f"Error during ONNX inference: {e}")
+
+
+
+
+
+
 if __name__ == "__main__":
     
     # Command line flags
@@ -362,7 +440,12 @@ if __name__ == "__main__":
             print("Training aborted do to data loading issiues")
 
     elif args.predict:
-         print("--- Prediction Mode ---")
+        print("--- Prediction Mode ---")
+        if args.input_features:
+            predict_with_onnx(args.model_path, args.scaler_path, args.input_features)
+        else:
+            print("Error: --input_features is required for prediction mode.")
+            parser.print_help()
     else:
         print("Please specify either --train or --predict")
         parser.print_help()
